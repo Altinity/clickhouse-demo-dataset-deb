@@ -1,0 +1,11 @@
+Package: chdemo-common
+Version: 0.1-1
+Section: misc
+Priority: optional
+Architecture: all
+Depends: bash, sed (>= 3.02-8), debianutils, software-properties-common, wget, xmlstarlet
+Maintainer: Vladislav Klimenko <vladislav@altinity.com>
+Description: ClickHouse Demo Common part
+ ClickHouse Demo Dataset.
+ Provides prerequirements for ClickHouse Demo Dataset
+

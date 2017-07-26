@@ -1,0 +1,11 @@
+Package: chdemo
+Version: 0.1-1
+Section: misc
+Priority: optional
+Architecture: all
+Depends: chdemo-common, clickhouse-server-common, clickhouse-client
+Maintainer: Vladislav Klimenko <vladislav@altinity.com>
+Description: ClickHouse Demo Dataset
+ ClickHouse Demo Dataset 
+ Provides sample database sets and test scripts
+

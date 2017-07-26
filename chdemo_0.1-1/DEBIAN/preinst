@@ -1,0 +1,246 @@
+#!/bin/bash
+
+# fail on any error
+set -e 
+
+# treat unset variables as errors
+set -u 
+
+# let shell functions inherit ERR trap
+set -E 
+
+# Trap non-normal exit signals:
+# 1/HUP, 2/INT, 3/QUIT, 15/TERM, ERR
+trap err_handler 1 2 3 15 ERR
+
+##
+## FUNCTIONS
+##
+
+#
+# write to system log files any errors happened
+#
+function err_handler {
+	local exit_status=${1:-$?}
+	logger -s -p "syslog.err" -t "chdemo.deb" "chdemo.deb script '$0' error code $exit_status (line $BASH_LINENO: '$BASH_COMMAND')"
+	exit $exit_status
+}
+
+#
+# echo line with additional frame
+#
+function echo_section {
+	echo ""
+	echo "###########################################"
+	echo "###########################################"
+	echo "### $1"
+	echo "###########################################"
+	echo "###########################################"
+	echo ""
+}
+
+##
+## CONSTANTS
+##
+
+EXIT_CODE_SERVICE_UNKNOWN=1
+EXIT_CODE_NO_CONIG_FILE=2
+EXIT_CODE_MKDIR_ERROR=3
+EXIT_CODE_CH_INSTALL_ERROR=4
+EXIT_CODE_FETCH_DATA_ERROR=5
+EXIT_CODE_ACCESS_ERROR=6
+
+######i###################################
+### MAIN
+######i###################################
+
+echo_section "Checking for ClickHouse Service."
+
+echo "Looking for Clickhouse Service Name"
+service=`service --status-all|grep clickhouse|awk '{print $4}'`
+
+echo "Clickhouse Service name is $service"
+if [ -z "$service" ]; then
+	echo "Unknown Clickhouse service name '$service'. Exiting";
+	exit $EXIT_CODE_SERVICE_UNKNOWN
+fi
+
+# ensure service is stopped
+if service "$service" stop; then
+	echo "Clickhouse stopped successfully"
+else
+	echo "Clickhouse has not been stopped now - not running?"
+fi
+
+
+echo_section "Modify ClickHouse config files"
+
+# modify clickhouse DB paths
+#
+# NB 
+# WARNING
+# these values MUST include / at the end
+#clickhouse_db_path=/data1/clickhouse/
+#clickhouse_db_path_tmp=/data1/clickhouse/tmp/
+
+fetch_demo_path=/home
+fetch_demo_file_gz="$fetch_demo_path/star.csv.gz"
+fetch_demo_file="$fetch_demo_path/star.csv"
+clickhouse_db_path=/home/clickhouse/
+clickhouse_db_path_tmp=/home/clickhouse/tmp/
+
+echo "Clickhouse path where to fetch data dump=$fetch_demo_path"
+echo "Dump .gz filename=$fetch_demo_file_gz"
+echo "Dump filename=$fetch_demo_file"
+echo "Clickhouse DB path=$clickhouse_db_path"
+echo "Clickhouse DB tmp path=$clickhouse_db_path_tmp"
+
+# make backup of original config
+if [ -e /etc/clickhouse-server/config.xml ]; then
+	echo "See config.xml in place, all looks fine"
+else
+	echo "Do not see config.xml. Exiting"
+	exit $EXIT_CODE_NO_CONIG_FILE
+fi
+
+echo "Backup config file to config.xml.orig"
+if cp -r /etc/clickhouse-server/config.xml /etc/clickhouse-server/config.xml.orig; then
+	echo "Backup copied"
+else
+	echo "Can't backup config file - copy error?"
+	exit $EXIT_CODE_ACCESS_ERROR
+fi
+
+if [ ! -f /etc/clickhouse-server/config.xml.orig ]; then
+	echo "Can't backup config file - access error?"
+	exit $EXIT_CODE_ACCESS_ERROR
+fi
+
+# update paths
+xmlstarlet edit -L -u "/yandex/path" -v "$clickhouse_db_path" /etc/clickhouse-server/config.xml
+xmlstarlet edit -L -u "/yandex/tmp_path" -v "$clickhouse_db_path_tmp" /etc/clickhouse-server/config.xml
+
+###<listen_host>::1</listen_host>
+###<listen_host>127.0.0.1</listen_host>
+
+xmlstarlet edit -L -d "/yandex/listen_host[position()>1]" /etc/clickhouse-server/config.xml
+xmlstarlet edit -L -u "/yandex/listen_host" -v "::" /etc/clickhouse-server/config.xml
+
+#sudo xmlstarlet edit -L -d "/yandex/listen_host" /etc/clickhouse-server/config.xml
+#sudo xmlstarlet edit -L -s "/yandex" -t elem -n listen_host -v "::" /etc/clickhouse-server/config.xml
+
+#### sudo service clickhouse-server start
+
+echo "Asking clickhouse status $service service"
+if service "$service" status; then
+	echo "Clickhouse status is fine"
+else
+	echo "Clickhouse is not that good"
+fi
+
+echo "Starting clickhouse as $service service"
+if service "$service" start; then
+	echo "Clickhouse started"
+else
+	echo "Error starting clikhouse"
+fi
+
+echo_section "Fetching DEMO DATA"
+
+echo "Ensure dir $fetch_demo_path" is present
+mkdir -p "$fetch_demo_path"
+
+if [ ! -d "$fetch_demo_path" ]; then
+	echo "Can't create dir $fetch_demo_path"
+	exit $EXIT_CODE_MKDIR_ERROR
+fi
+
+echo "Pulling dataset into $fetch_demo_file_gz"
+if wget http://sdm.lbl.gov/fastbit/data/star2002-full.csv.gz --output-document="$fetch_demo_file_gz"; then
+	echo "Download completed";
+else
+	echo "Download failed"
+	exit $EXIT_CODE_FETCH_DATA_ERROR
+fi
+
+if [ ! -f "$fetch_demo_file_gz" ]; then
+	echo "DEMO data file not downloaded into $fetch_demo_file_gz"
+	exit $EXIT_CODE_FETCH_DATA_ERROR
+fi	
+
+echo "Unpacking dataset $fetch_demo_file_gz to $fetch_demo_file"
+if gzip -d --to-stdout "$fetch_demo_file_gz" > "$fetch_demo_file"; then
+	echo "Unpack completed"
+else
+	echo "Unpack failed"
+	exit $EXIT_CODE_FETCH_DATA_ERROR
+fi
+
+echo "Looking for clickhouse-client utility"
+clickhouse_client=`which clickhouse-client`
+echo "ClikcHouse client utility=$clickhouse_client"
+
+if [ -z "$clickhouse_client" ]; then
+	echo "Can't find clickhouse-client"
+	exit $EXIT_CODE_CH_INSTALL_ERROR
+fi
+
+echo "Found clickhouse-client"
+
+echo "Building DB"
+if service "$service" start; then
+	echo "Clickhouse started successfully. Waiting for some time for service to startup"
+	sleep 10
+else
+	echo "Clickhouse NOT started"
+	exit $EXIT_CODE_CH_INSTALL_ERROR
+fi
+	
+echo_section "Importing DEMO DATA"
+	
+$clickhouse_client --query="CREATE DATABASE IF NOT EXISTS star;"
+$clickhouse_client --query="CREATE TABLE IF NOT EXISTS star.starexp (
+  antiNucleus	UInt32,
+  eventFile	UInt32,
+  eventNumber	UInt32,
+  eventTime	Float64,
+  histFile	UInt32,
+  multiplicity	UInt32,
+  NaboveLb	UInt32,
+  NbelowLb	UInt32,
+  NLb		UInt32,
+  primaryTracks	UInt32,
+  prodTime	Float64,
+  Pt		Float32,
+  runNumber	UInt32,
+  vertexX		Float32,
+  vertexY		Float32,
+  vertexZ		Float32,
+  eventDate Date default concat(substring(toString(floor(eventTime)), 1, 4), '-', substring(toString(floor(eventTime)), 5, 2), '-', substring(toString(floor(eventTime)), 7, 2))
+)
+ENGINE = MergeTree(eventDate, (eventNumber, eventTime, runNumber, eventFile, multiplicity), 8192);
+"
+
+dump_repetitions=1
+echo "Going to repeat dump $dump_repetitions times"
+
+start_time=`date +%s`
+for i in `seq 1 $dump_repetitions`; do
+	echo "start load #$i at `date`"
+	start_load_time=`date +%s`
+	cat $fetch_demo_file | $clickhouse_client --query="INSERT INTO star.starexp (antiNucleus, eventFile, eventNumber, eventTime, histFile, multiplicity, NaboveLb, NbelowLb, NLb, primaryTracks, prodTime, Pt, runNumber, vertexX, vertexY, vertexZ) FORMAT CSV"
+	end_load_time=`date +%s`
+	echo "done load #$i at `date`, completed in " $(($end_load_time - $start_load_time)) " second(s)"
+done
+end_time=`date +%s`
+duration=$(($end_time - $start_time))
+echo "Complete in $duration second(s)"
+
+
+####clickhouse-client
+
+echo_section "All DONE"
+
+exit 0
+
+
